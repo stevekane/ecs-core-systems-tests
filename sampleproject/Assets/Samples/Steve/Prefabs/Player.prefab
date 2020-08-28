@@ -268,7 +268,7 @@ MonoBehaviour:
     Value:
       x: -90
       y: 0
-      z: -90
+      z: 90
     RotationOrder: 4
   m_Capsule:
     Height: 2
@@ -464,9 +464,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   targetPosition:
-    x: 1
+    x: 4
     y: 0
-    z: 1
+    z: 4
 --- !u!1 &8665396679710707706
 GameObject:
   m_ObjectHideFlags: 0
