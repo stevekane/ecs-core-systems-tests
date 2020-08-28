@@ -10,6 +10,7 @@ public class NetCodeBootstrap : ClientServerBootstrap
     {
         var sceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
         if (sceneName == "Asteroids" ||
+            sceneName == "Steve" ||
             sceneName == "NetCube" ||
             sceneName == "LagCompensation" ||
             sceneName.StartsWith("BasicPrespawnTest") ||
