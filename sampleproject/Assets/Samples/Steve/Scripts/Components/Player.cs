@@ -5,4 +5,6 @@ using Unity.Mathematics;
 
 [Serializable]
 [GenerateAuthoringComponent]
-public struct Player : IComponentData {}
+public struct Player : IComponentData {
+  [GhostField] public float speed;
+}

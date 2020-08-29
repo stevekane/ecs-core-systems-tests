@@ -8,8 +8,8 @@ public class EstablishConnection : ComponentSystem {
 
   protected override void OnCreate() {
     RequireSingletonForUpdate<InitGameComponent>();
-        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "Steve")
-            return;
+    if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "Steve")
+        return;
     EntityManager.CreateEntity(typeof(InitGameComponent));
   }
 

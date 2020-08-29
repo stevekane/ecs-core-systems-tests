@@ -155,7 +155,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   Active: 0
-  State: 0
+  State: 3
   TriggerDuration: 0
   TriggerTimer: 0
   TriggerCost: 0

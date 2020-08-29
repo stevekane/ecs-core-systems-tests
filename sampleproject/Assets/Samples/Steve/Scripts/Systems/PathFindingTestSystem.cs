@@ -5,6 +5,7 @@ using Unity.Transforms;
 using Unity.NetCode;
 using UnityEngine;
 using UnityEngine.Experimental.AI;
+using Unity.Mathematics;
 
 public struct PolygonSearchConfig {
   public NavMeshLocation start;
@@ -30,6 +31,11 @@ public struct PathConfig {
   public int maxStackSize;
   public int maxNodesTraversedPerUpdate;
   public int agentTypeId;
+}
+
+public struct NavigationPathPoint : IBufferElementData {
+  public static implicit operator float3(NavigationPathPoint np) => np.Value;
+  public float3 Value;
 }
 
 [UpdateInGroup(typeof(ClientSimulationSystemGroup))]
@@ -104,22 +110,44 @@ public class PathFindingTestSystem : SystemBase {
     return pathLength;
   }
 
-  public void DrawDebugPath(NativeArray<NavMeshLocation> path, int length) {
-    for (int i = 1; i < length; i++) {
-      Debug.DrawLine(path[i-1].position, path[i].position, Color.red);
+  public void FillPathBuffer(DynamicBuffer<NavigationPathPoint> navPointBuffer, NativeArray<NavMeshLocation> navMeshLocations, int count) {
+    navPointBuffer.Clear();
+    for (int i = 0; i < count; i++) {
+      navPointBuffer.Add(new NavigationPathPoint { Value = navMeshLocations[i].position });
     }
   }
 
+  public void DebugDrawPathBuffer(DynamicBuffer<NavigationPathPoint> navBuffer, int length) {
+    for (int i = 1; i < length; i++) {
+      Debug.DrawLine(navBuffer[i-1].Value, navBuffer[i].Value, Color.red);
+    }
+  }
+
+  // This version runs on the main thread without burst because NavMeshWorld uses unsafe pointers
+  // which means you cannot pass it to a burst job
+  // You could possibly get around this by following some of this blackmagicfuckery
+  // https://reeseschultz.com/dots-navigation-with-auto-jumping-agents-and-movable-surfaces/
   protected override void OnUpdate() {
     NavMeshWorld navMeshWorld = NavMeshWorld.GetDefaultWorld();
+    BufferFromEntity<NavigationPathPoint> existingPathBuffers = GetBufferFromEntity<NavigationPathPoint>();
+    EntityCommandBuffer ecb = new EntityCommandBuffer(Allocator.TempJob, PlaybackPolicy.SinglePlayback);
 
-    // This version runs on the main thread without burst because NavMeshWorld uses unsafe pointers
-    // which means you cannot pass it to a burst job
-    // You could possibly get around this by following some of this blackmagicfuckery
-    // https://reeseschultz.com/dots-navigation-with-auto-jumping-agents-and-movable-surfaces/
+    Entities
+    .WithAll<Traveler>()
+    .ForEach((Entity e) => {
+      if (!existingPathBuffers.HasComponent(e)) {
+        ecb.AddBuffer<NavigationPathPoint>(e);
+      }
+    }).Run();
+
+    ecb.Playback(World.EntityManager);
+    ecb.Dispose();
+
+    BufferFromEntity<NavigationPathPoint> pathBuffers = GetBufferFromEntity<NavigationPathPoint>();
+
     Entities
     .WithoutBurst()
-    .ForEach((ref Translation translation, in Traveler traveler) => {
+    .ForEach((Entity e, ref Translation translation, in Traveler traveler) => {
       PathConfig pathConfig = new PathConfig {
         allocator = Allocator.Temp,
         navMeshWorld = navMeshWorld,
@@ -133,8 +161,10 @@ public class PathFindingTestSystem : SystemBase {
       };
       NativeArray<NavMeshLocation> path = new NativeArray<NavMeshLocation>(pathConfig.maxPathLength, Allocator.Temp);
       int pathLength = TryComputePath(pathConfig, path);
-
-      DrawDebugPath(path, pathLength);
+      DynamicBuffer<NavigationPathPoint> navBuffer = pathBuffers[e];
+      
+      FillPathBuffer(navBuffer, path, pathLength);
+      DebugDrawPathBuffer(navBuffer, pathLength);
       path.Dispose();
     }).Run();
   }
