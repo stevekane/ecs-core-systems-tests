@@ -38,7 +38,7 @@ public struct NavigationPathPoint : IBufferElementData {
   public float3 Value;
 }
 
-[UpdateInGroup(typeof(ClientSimulationSystemGroup))]
+[UpdateInGroup(typeof(ServerSimulationSystemGroup))]
 public class PathFindingTestSystem : SystemBase {
   // TODO: This has no error-handling but it may be fairly common that a path cannot be found
   //       or that some inputs to the query such as start and end locations are not sufficiently-close
@@ -86,15 +86,14 @@ public class PathFindingTestSystem : SystemBase {
   }
 
   public int TryComputePath([ReadOnly] PathConfig pathConfig, NativeArray<NavMeshLocation> straightPath) {
-    var navMeshQuery = new NavMeshQuery(pathConfig.navMeshWorld, Allocator.TempJob, pathConfig.maxStackSize);
-    var polygonIds = new NativeArray<PolygonId>(pathConfig.maxPathLength, Allocator.TempJob);
+    NavMeshQuery navMeshQuery = new NavMeshQuery(pathConfig.navMeshWorld, Allocator.TempJob, pathConfig.maxStackSize);
+    NativeArray<PolygonId> polygonIds = new NativeArray<PolygonId>(pathConfig.maxPathLength, Allocator.TempJob);
     PolygonSearchConfig searchConfig = new PolygonSearchConfig {
       start = navMeshQuery.MapLocation(pathConfig.start, pathConfig.searchExtents, pathConfig.agentTypeId),
       end = navMeshQuery.MapLocation(pathConfig.end, pathConfig.searchExtents, pathConfig.agentTypeId),
       maxNodesTraversedPerUpdate = 32,
     };
     int polyCount = ComputeConnectedPolygons(searchConfig, navMeshQuery, polygonIds);
-
     StraightPathConfig straightPathConfig = new StraightPathConfig {
       start = searchConfig.start,
       end = searchConfig.end,
@@ -102,7 +101,6 @@ public class PathFindingTestSystem : SystemBase {
       maxPathLength = pathConfig.maxPathLength,
       polygonIds = polygonIds
     };
-
     int pathLength = ComputeStraightPath(straightPathConfig, navMeshQuery, straightPath);
 
     navMeshQuery.Dispose();

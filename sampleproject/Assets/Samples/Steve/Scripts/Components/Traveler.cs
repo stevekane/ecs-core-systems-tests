@@ -7,4 +7,5 @@ using UnityEngine.AI;
 [GenerateAuthoringComponent]
 public struct Traveler : IComponentData {
   public float3 targetPosition;
+  public float speed;
 }
