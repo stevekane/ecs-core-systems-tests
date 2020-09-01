@@ -7,39 +7,14 @@ using Unity.Mathematics;
 using Unity.Transforms;
 using static Unity.Mathematics.math;
 
+public struct SpatialMember {
+  public float3 position;
+  public Entity entity;
+}
+
 [UpdateInGroup(typeof(ServerSimulationSystemGroup))]
 [UpdateAfter(typeof(PathFindingTestSystem))]
 public class MinionAISystem : SystemBase {
-  /*
-  The initial version of the minion AI is only concerned with moving the minion based on multiple
-  considerations:
-
-  In particular, the minion has a current target destination and an "ideal path" queried from 
-  the navigation mesh systems.
-
-  Additionally, each minion has a local pressure which is a measure of how many minions are nearby it
-  and where the minion would need to move to reduce that instantaneous pressure.
-
-  We are going to solve this system in a very stupid way by first pushing the unit along its path
-  and then pushing around based on its local pressure. 
-
-  We could augment our notion of local pressure to include a scale factor for each contributing elements'
-  velocity. This would mean that a fast-moving minion pushing "into" you would be weighed more heavily
-  in the calculation of instantaneous pressure. 
-
-  Furthermore, we could also restrict a unit's ability to react to local pressure based on its inertia
-  which is simply its velocity when all units share the same mass. 
-
-  Finally, we could give priority to units that are currently closer to the goal such that they are less likely
-  to move in response to pressure. As a result, they will continue to try to get to the goal but be less
-  willing to move in response to the presence of other minions.
-
-  The algorithm thus will look as follows:
-
-  Push unit along path based on maximum speed
-  Compute local pressure
-  Push unit along negative gradient of the local pressure
-  */
   static float3 TravelAlongPath(in DynamicBuffer<NavigationPathPoint> path, in float maxDistance) {
     float remainingTravelableDistance = maxDistance;
     float3 position = path[0].Value;
@@ -65,45 +40,124 @@ public class MinionAISystem : SystemBase {
     return int2((int)position.x, (int)position.z);
   }
 
-  static float3 ComputeLocalPressure(in NativeMultiHashMap<int2, float3> spatialIndex, in int2 bucketIndex, in float3 position) {
-    float3 pressure = float3(0,0,0);
-    int count = 0;
+  static NativeList<SpatialMember> Neighbors(in Entity entity, in float3 position, in NativeMultiHashMap<int2, SpatialMember> spatialIndex, in Allocator allocator) {
+    const int MAX_NEIGHBOR_COUNT = 64;
+
+    int2 bucketIndex = BucketIndex(position);
+    NativeList<SpatialMember> neighbors = new NativeList<SpatialMember>(MAX_NEIGHBOR_COUNT, allocator);
 
     for (int i = bucketIndex.x - 1; i <= bucketIndex.x + 1; i++) {
       for (int j = bucketIndex.y - 1; j <= bucketIndex.y + 1; j++) {
         int2 bi = int2(i,j);
-        if (spatialIndex.TryGetFirstValue(bi, out float3 p, out NativeMultiHashMapIterator<int2> iterator)) {
+        if (spatialIndex.TryGetFirstValue(bi, out SpatialMember n, out NativeMultiHashMapIterator<int2> iterator)) {
           do {
-            if (p.x == position.x && p.z == position.z) {
-              // TODO: this is horrible... may need to check for actual identity to not "interact" with itself...
-              // This would require adding the entity id to this nativemultihashmap 
+            if (entity != n.entity) {
+              neighbors.Add(n);
             }
-            else {
-              float3 v = p - position;
-              v.y = 0; // TODO: a hack to figure out where y displacement is coming from
-              float d = length(v);
-              float d2 = d * d;
-
-              if (d <= .5f) {
-                pressure += v / d2;
-                count += 1;
-              }
-            }
-          } while (spatialIndex.TryGetNextValue(out p, ref iterator));
+          } while (spatialIndex.TryGetNextValue(out n, ref iterator));
         }
       }
     }
-    pressure /= math.max(count, 1);
-    return pressure;
+    return neighbors;
+  }
+
+  // This is a function W that describes the weighted falloff relationship between a particle and another particle
+  // Taken from https://github.com/InteractiveComputerGraphics/PositionBasedDynamics/blob/9f9edfe33bc7bb8a8624e0e5ca1a544fce05da88/PositionBasedDynamics/SPHKernels.h#L35
+  static float W(in float3 v, in float maxDistanceSquared) {
+    float rl = lengthsq(v);
+    float q = rl / maxDistanceSquared;
+
+    // These are two functions that have the same value at q=.5 and smoothly blend to one-another
+    if (q <= .5) {
+      float q2 = q * q;
+      float q3 = q2 * q;
+
+      return 6*q3 - 6*q2 + 1;
+    } else if (q <= 1) {
+      return 2*pow(1-q, 3);
+    } else {
+      return 0;
+    }
+  }
+
+  // This is a function gradW that is the gradient of the function W above
+  // Taken from https://github.com/InteractiveComputerGraphics/PositionBasedDynamics/blob/9f9edfe33bc7bb8a8624e0e5ca1a544fce05da88/PositionBasedDynamics/SPHKernels.h#L59
+  static float3 GradW(in float3 v, in float maxDistanceSquared) {
+    const float EPSILON = 1e-6f;
+
+    float rl = lengthsq(v);
+    float q = rl / maxDistanceSquared;
+
+    if (rl <= EPSILON) 
+      return float3(0,0,0);
+
+    float3 gradq = v / (rl * maxDistanceSquared);
+
+    // These are two functions that have the same value at q=.5 and smoothly blend to one-another
+    if (q <= .5) {
+      return q * (3*q - 2) * gradq;
+    } else if (q <= 1) {
+      float factor = 1-q;
+
+      return -factor*factor*gradq;
+    } else {
+      return float3(0,0,0);
+    }
+  }
+
+  // p_i in equations of position-based-fluid constraints
+  static float Density(in NativeList<SpatialMember> neighbors, in float3 position) {
+    const float MAX_DISTANCE_SQUARED = .5f * .5f;
+    float density = 1;
+
+    for (int i = 0; i < neighbors.Length; i++) {
+      density += W(position - neighbors[i].position, MAX_DISTANCE_SQUARED);
+    }
+    return density;
+  }
+
+  // lambda in equations of position-based-fluid constraints
+  static float LagrangeMultiplier(in NativeList<SpatialMember> neighbors, in float3 position, in float density) {
+    const float MAX_DISTANCE_SQUARED = .5f * .5f;
+    const float EPSILON = 1e-6f;
+    float constraint = max(0, density - 1);
+
+    if (constraint == 0)
+      return 0;
+
+    float sumGradC2 = 0;
+    float3 gradCi = float3(0,0,0);
+
+    for (int i = 0; i < neighbors.Length; i++) {
+      float3 gradCj = -GradW(position - neighbors[i].position, MAX_DISTANCE_SQUARED);
+
+      sumGradC2 += dot(gradCj, gradCj);
+      gradCi -= gradCj;
+    }
+    sumGradC2 += dot(gradCi, gradCi);
+    return -constraint / (sumGradC2 + EPSILON);
+  }
+
+  static float3 ProjectDensityConstraint(in NativeList<SpatialMember> neighbors, in ComponentDataFromEntity<FluidLike> fluidLikes, in Entity entity, in float3 position) {
+    const float MAX_DISTANCE_SQUARED = .5f * .5f;
+
+    float3 delta = float3(0,0,0);
+    for (int i = 0; i < neighbors.Length; i++) {
+      SpatialMember neighbor = neighbors[i];
+      float3 gradC = -GradW(position - neighbor.position, MAX_DISTANCE_SQUARED);
+      float lagrangeMultiplier1 = fluidLikes[entity].lagrangeMultiplier;
+      float lagrangeMultiplier2 = fluidLikes[neighbor.entity].lagrangeMultiplier;
+
+      delta -= (lagrangeMultiplier1 + lagrangeMultiplier2) * gradC;
+    }
+    return delta;
   }
 
   protected override void OnUpdate() {
-    const int MAX_QUERYABLE_MINIONS = 1024;
-    const float PRESSURE_SCALE_FACTOR = .01f;
-    const int SUBSTEP_COUNT = 12;
     float dt = Time.DeltaTime;
     BufferFromEntity<NavigationPathPoint> navBuffers = GetBufferFromEntity<NavigationPathPoint>(true);
 
+    // move each traveler along their path
     Entities
     .WithBurst()
     .WithReadOnly(navBuffers)
@@ -114,32 +168,53 @@ public class MinionAISystem : SystemBase {
       translation.Value = (path.Length > 1) ? TravelAlongPath(path, maxPathDistance) : translation.Value;
     }).ScheduleParallel();
 
-    // Step the pressure iteratively to try to let it converge
-    for (int i = 0; i < SUBSTEP_COUNT; i++) {
-      NativeMultiHashMap<int2, float3> spatialIndex = new NativeMultiHashMap<int2, float3>(MAX_QUERYABLE_MINIONS, Allocator.TempJob);
+    const int MAX_QUERYABLE_MINIONS = 1024;
+    const int ITERATION_COUNT = 8;
 
-      // TODO: Could try a .Concurrent NativeMultiHashMap and ScheduleParallel. Not sure if it will actually be faster though w/ write-locking
+    for (int i = 0; i < ITERATION_COUNT; i++) {
+      NativeMultiHashMap<int2, SpatialMember> spatialIndex = new NativeMultiHashMap<int2, SpatialMember>(MAX_QUERYABLE_MINIONS, Allocator.TempJob);
+
+      // Create spatial index to store nearest neighbors
       Entities
       .WithBurst()
-      .WithAll<Traveler>()
-      .ForEach((in Translation translation) => {
+      .WithAll<Traveler, FluidLike>()
+      .ForEach((Entity entity, in Translation translation) => {
         float3 position = translation.Value;
         int2 bucketIndex = BucketIndex(position);
 
-        spatialIndex.Add(bucketIndex, position);
+        spatialIndex.Add(bucketIndex, new SpatialMember { entity = entity, position = position });
       }).Schedule();
 
+      // Compute each particle's density and lagrange multiplier via neighbors
       Entities
       .WithBurst()
       .WithReadOnly(spatialIndex)
-      .WithDisposeOnCompletion(spatialIndex)
       .WithAll<Traveler>()
-      .ForEach((ref Translation translation) => {
-        int2 bucketIndex = BucketIndex(translation.Value);
-        float3 localPressure = ComputeLocalPressure(spatialIndex, bucketIndex, translation.Value);
-        float3 adjustedPosition = localPressure * PRESSURE_SCALE_FACTOR;
+      .ForEach((Entity e, ref FluidLike fluidLike, ref Translation translation) => {
+        NativeList<SpatialMember> neighbors = Neighbors(e, translation.Value, spatialIndex, Allocator.Temp);
+        float density = Density(neighbors, translation.Value);
+        float lagrangeMultiplier = LagrangeMultiplier(neighbors, translation.Value, density);
 
-        translation.Value -= adjustedPosition;
+        fluidLike.density = density;
+        fluidLike.lagrangeMultiplier = lagrangeMultiplier;
+        neighbors.Dispose();
+      }).ScheduleParallel();
+
+      ComponentDataFromEntity<FluidLike> fluidLikes = GetComponentDataFromEntity<FluidLike>(false);
+
+      // Project density constraints 
+      Entities
+      .WithBurst()
+      .WithReadOnly(spatialIndex)
+      .WithReadOnly(fluidLikes)
+      .WithDisposeOnCompletion(spatialIndex) // TODO: Disposing here
+      .WithAll<Traveler, FluidLike>()
+      .ForEach((Entity entity, ref Translation translation) => {
+        NativeList<SpatialMember> neighbors = Neighbors(entity, translation.Value, spatialIndex, Allocator.Temp);
+        float3 delta = ProjectDensityConstraint(neighbors, fluidLikes, entity, translation.Value);
+
+        translation.Value += delta;
+        neighbors.Dispose();
       }).ScheduleParallel();
     }
   }

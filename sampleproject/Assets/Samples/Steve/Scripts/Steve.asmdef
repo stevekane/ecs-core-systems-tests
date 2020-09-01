@@ -4,12 +4,12 @@
         "Unity.Burst",
         "Unity.Entities",
         "Unity.Transforms",
-        "Unity.Collections",
         "Unity.Mathematics",
         "Unity.Networking.Transport",
         "Unity.NetCode",
         "Unity.Physics",
-        "Unity.Rendering.Hybrid"
+        "Unity.Rendering.Hybrid",
+        "Unity.Collections"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
