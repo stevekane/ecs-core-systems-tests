@@ -161,10 +161,13 @@ public class MinionAISystem : SystemBase {
     Entities
     .WithBurst()
     .WithReadOnly(navBuffers)
-    .ForEach((Entity e, ref Translation translation, in Traveler traveler) => {
+    .ForEach((Entity e, ref Translation translation, in FluidLike fluidLike, in Traveler traveler) => {
       DynamicBuffer<NavigationPathPoint> path = navBuffers[e];
       float maxPathDistance = traveler.speed * dt;
-      
+
+      // TODO: I think I need to add something here that modulates the urgency of path-finding by local density
+      // If you're tightly surrounded you should not try very hard to move
+
       translation.Value = (path.Length > 1) ? TravelAlongPath(path, maxPathDistance) : translation.Value;
     }).ScheduleParallel();
 
@@ -190,7 +193,7 @@ public class MinionAISystem : SystemBase {
       .WithBurst()
       .WithReadOnly(spatialIndex)
       .WithAll<Traveler>()
-      .ForEach((Entity e, ref FluidLike fluidLike, ref Translation translation) => {
+      .ForEach((Entity e, ref FluidLike fluidLike, in Translation translation) => {
         NativeList<SpatialMember> neighbors = Neighbors(e, translation.Value, spatialIndex, Allocator.Temp);
         float density = Density(neighbors, translation.Value);
         float lagrangeMultiplier = LagrangeMultiplier(neighbors, translation.Value, density);
